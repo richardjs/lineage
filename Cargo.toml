@@ -1,0 +1,10 @@
+[package]
+name = "lineage"
+version = "0.1.0"
+authors = ["Richard Schneider <richard@schneiderbox.net>"]
+edition = "2018"
+
+[dependencies]
+bs58 = "0.2.2"
+ring = "0.14.6"
+untrusted = "0.6.2"
