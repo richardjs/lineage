@@ -24,6 +24,11 @@ fn main() {
         black.public_key().as_ref(),
     );
 
+    let mut chain = lineage::block::GameChain::new(challenge);
+    dbg!(chain.as_bytes());
+    chain.sign(&white);
+    dbg!(chain.as_bytes());
+
     //    let listener = TcpListener::bind("0.0.0.0:10152").unwrap();
     //
     //    for stream in listener.incoming() {
