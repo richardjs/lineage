@@ -18,15 +18,16 @@ pub fn generate_key(rng: &dyn SecureRandom) -> Ed25519KeyPair {
     .unwrap()
 }
 
-pub fn verify(
-    public_key: &Ed25519KeyPair,
-    msg: &[u8],
-    sig: &[u8],
-) -> Result<(), ring::error::Unspecified> {
+pub fn sign(key_pair: &Ed25519KeyPair, msg: &[u8]) -> Vec<u8> {
+    key_pair.sign(msg).as_ref().iter().cloned().collect()
+}
+
+pub fn verify(public_key: &[u8], msg: &[u8], sig: &[u8]) -> bool {
     signature::verify(
         &signature::ED25519,
-        Input::from(public_key.public_key().as_ref()),
+        Input::from(public_key),
         Input::from(msg),
         Input::from(sig),
     )
+    .is_ok()
 }

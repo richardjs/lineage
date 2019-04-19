@@ -1,6 +1,10 @@
+use crate::crypto;
+
+use ring::signature::{Ed25519KeyPair, KeyPair};
+
 pub trait Block {}
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ChallengeBlock {
     version: u8,
     network_id: u8,
@@ -52,8 +56,8 @@ impl ChallengeBlock {
         }
     }
 
-    pub fn as_bytes(&self) -> [u8; 82] {
-        let mut bytes: [u8; 82] = [0; 82];
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let mut bytes = vec![0; 82];
         bytes[0] = self.version;
         bytes[1] = self.network_id;
         bytes[2..6].copy_from_slice(&self.id.to_be_bytes());
@@ -65,8 +69,18 @@ impl ChallengeBlock {
     }
 }
 
-struct SignatureBlock {
-    signature: [u8; 64],
+#[derive(Clone)]
+struct AcceptBlock {
+    signature: Vec<u8>,
+}
+
+impl AcceptBlock {
+    fn new(challenge: &ChallengeBlock, key_pair: &Ed25519KeyPair) -> AcceptBlock {
+        let challenge_bytes = challenge.as_bytes();
+        AcceptBlock {
+            signature: crypto::sign(key_pair, &challenge_bytes),
+        }
+    }
 }
 
 struct MoveBlock {
@@ -77,15 +91,75 @@ struct MoveBlock {
 
 struct GameChain {
     challenge: ChallengeBlock,
-    signatures: [SignatureBlock; 2],
+    accepts: [Option<AcceptBlock>; 2],
     moves: Vec<MoveBlock>,
 }
 
 impl GameChain {
-    fn new(&self) {
-        //        GameChain {
-        //            Challeng
-        //        }
+    fn new(challenge: ChallengeBlock) -> GameChain {
+        GameChain {
+            challenge,
+            accepts: [None, None],
+            moves: Vec::new(),
+        }
+    }
+
+    fn sign(&mut self, key_pair: &Ed25519KeyPair) -> Result<(), &str> {
+        let mut public_key_bytes: [u8; 32] = [0; 32];
+        public_key_bytes.copy_from_slice(key_pair.public_key().as_ref());
+        if public_key_bytes != self.challenge.white_public_key
+            && public_key_bytes != self.challenge.black_public_key
+        {
+            return Err("This key is not in the challenge block.");
+        }
+
+        if self.accepts[0].is_none() && self.accepts[1].is_some() {
+            self.accepts[0] = self.accepts[1].clone();
+            self.accepts[1] = None;
+        }
+
+        if self.accepts[0].is_none() {
+            self.accepts[0] = Some(AcceptBlock::new(&self.challenge, key_pair));
+            return Ok(());
+        } else if self.accepts[1].is_none() {
+            if crypto::verify(
+                &public_key_bytes,
+                &self.challenge.as_bytes(),
+                &self.accepts[0].clone().unwrap().signature,
+            ) {
+                return Err("This key is already present in the chain.");
+            }
+            self.accepts[1] = Some(AcceptBlock::new(&self.challenge, key_pair));
+            return Ok(());
+        } else {
+            return Err("There are already two signatures on this chain.");
+        }
+    }
+
+    fn verify(&self) -> bool {
+        if self.accepts[0].is_none() || self.accepts[1].is_none() {
+            return false;
+        }
+        if (crypto::verify(
+            &self.challenge.white_public_key,
+            &self.challenge.as_bytes(),
+            &self.accepts[0].clone().unwrap().signature,
+        ) && crypto::verify(
+            &self.challenge.black_public_key,
+            &self.challenge.as_bytes(),
+            &self.accepts[1].clone().unwrap().signature,
+        )) || (crypto::verify(
+            &self.challenge.white_public_key,
+            &self.challenge.as_bytes(),
+            &self.accepts[1].clone().unwrap().signature,
+        ) && crypto::verify(
+            &self.challenge.black_public_key,
+            &self.challenge.as_bytes(),
+            &self.accepts[0].clone().unwrap().signature,
+        )) {
+            return true;
+        }
+        return false;
     }
 }
 
@@ -103,5 +177,46 @@ mod test {
         let challenge =
             ChallengeBlock::new(white.public_key().as_ref(), black.public_key().as_ref());
         assert_eq!(challenge, ChallengeBlock::from_bytes(&challenge.as_bytes()));
+    }
+
+    #[test]
+    fn sign_and_verify_chain() {
+        let rng = crypto::new_rng();
+        let white = crypto::generate_key(&rng);
+        let black = crypto::generate_key(&rng);
+        let challenge =
+            ChallengeBlock::new(white.public_key().as_ref(), black.public_key().as_ref());
+        let mut chain = GameChain::new(challenge.clone());
+        chain.sign(&white);
+        chain.sign(&black);
+        assert!(chain.verify());
+
+        chain = GameChain::new(challenge);
+        chain.sign(&black);
+        chain.sign(&white);
+        assert!(chain.verify());
+    }
+
+    #[test]
+    fn chain_verify_fails() {
+        let rng = crypto::new_rng();
+        let white = crypto::generate_key(&rng);
+        let black = crypto::generate_key(&rng);
+        let challenge =
+            ChallengeBlock::new(white.public_key().as_ref(), black.public_key().as_ref());
+        let mut chain = GameChain::new(challenge);
+
+        assert!(!chain.verify());
+
+        chain.sign(&white);
+        assert!(!chain.verify());
+
+        // sign a second time with the same key (shouldn't work)
+        chain.sign(&white);
+        assert!(!chain.verify());
+
+        // duplicate the key so both accept blocks will verify (but only for one color)
+        chain.accepts[1] = chain.accepts[0].clone();
+        assert!(!chain.verify());
     }
 }

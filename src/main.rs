@@ -24,10 +24,6 @@ fn main() {
         black.public_key().as_ref(),
     );
 
-    println!("{:?}", challenge);
-    let bytes = challenge.as_bytes();
-    println!("{:?}", lineage::block::ChallengeBlock::from_bytes(&bytes));
-
     //    let listener = TcpListener::bind("0.0.0.0:10152").unwrap();
     //
     //    for stream in listener.incoming() {
