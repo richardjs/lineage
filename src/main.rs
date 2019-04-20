@@ -4,9 +4,9 @@ extern crate bs58;
 extern crate ring;
 extern crate untrusted;
 
-use std::io::prelude::*;
+//use std::io::prelude::*;
 
-use std::net::{TcpListener, TcpStream};
+//use std::net::{TcpListener, TcpStream};
 
 use ring::signature::KeyPair;
 
@@ -24,10 +24,13 @@ fn main() {
         black.public_key().as_ref(),
     );
 
-    let mut chain = lineage::block::GameChain::new(challenge);
-    dbg!(chain.as_bytes());
-    chain.sign(&white);
-    dbg!(chain.as_bytes());
+    let mut _chain = lineage::block::GameChain::new(challenge);
+
+    let game = chess::Game::new();
+    for m in chess::MoveGen::new_legal(&game.current_position()) {
+        dbg!(m.to_string());
+        dbg!(m);
+    }
 
     //    let listener = TcpListener::bind("0.0.0.0:10152").unwrap();
     //

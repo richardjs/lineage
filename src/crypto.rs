@@ -3,7 +3,7 @@ extern crate untrusted;
 
 use ring::{
     rand::{SecureRandom, SystemRandom},
-    signature::{self, Ed25519KeyPair, KeyPair},
+    signature::{self, Ed25519KeyPair},
 };
 use untrusted::Input;
 

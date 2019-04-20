@@ -1,8 +1,7 @@
 use crate::crypto;
 
+use chess::{Action, Color, Game, MoveGen};
 use ring::signature::{Ed25519KeyPair, KeyPair};
-
-pub trait Block {}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChallengeBlock {
@@ -96,14 +95,22 @@ impl AcceptBlock {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct MoveBlock {
     start_square: u8,
     end_square: u8,
     signature: Vec<u8>,
 }
 
-#[derive(Debug, PartialEq)]
+impl MoveBlock {
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let mut bytes = vec![self.start_square, self.end_square];
+        bytes.extend(&self.signature);
+        bytes
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct GameChain {
     challenge: ChallengeBlock,
     accepts: [Option<AcceptBlock>; 2],
@@ -120,6 +127,7 @@ impl GameChain {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<GameChain, &str> {
+        // TODO change challenge::from_bytes to use Result
         if bytes.len() < 82 {
             return Err("Not enough bytes to create challenge block.");
         }
@@ -138,7 +146,23 @@ impl GameChain {
         Ok(chain)
     }
 
-    pub fn sign(&mut self, key_pair: &Ed25519KeyPair) -> Result<(), &str> {
+    pub fn get_game(&self) -> Game {
+        let mut game = Game::new();
+        'next_block: for move_block in &self.moves {
+            for mv in MoveGen::new_legal(&game.current_position()) {
+                if move_block.start_square == mv.get_source().to_int()
+                    && move_block.end_square == mv.get_dest().to_int()
+                {
+                    game.make_move(mv);
+                    continue 'next_block;
+                }
+            }
+            panic!("Invalid game chain!");
+        }
+        game
+    }
+
+    pub fn accept(&mut self, key_pair: &Ed25519KeyPair) -> Result<(), &str> {
         let mut public_key_bytes: [u8; 32] = [0; 32];
         public_key_bytes.copy_from_slice(key_pair.public_key().as_ref());
         if public_key_bytes != self.challenge.white_public_key
@@ -170,11 +194,55 @@ impl GameChain {
         }
     }
 
+    pub fn make_move_block(
+        &mut self,
+        key_pair: &Ed25519KeyPair,
+        action: Action,
+    ) -> Result<(), &str> {
+        let game = self.get_game();
+
+        let public_key_to_move = match game.side_to_move() {
+            Color::White => self.challenge.white_public_key,
+            Color::Black => self.challenge.black_public_key,
+        };
+        if public_key_to_move != key_pair.public_key().as_ref() {
+            return Err("This key cannot sign the current move.");
+        }
+
+        let block = match action {
+            Action::MakeMove(mv) => {
+                let start_square = mv.get_source().to_int();
+                let end_square = mv.get_dest().to_int();
+
+                if !game.current_position().legal(mv) {
+                    return Err("Invalid move.");
+                }
+
+                let mut chain_bytes = self.as_bytes();
+                chain_bytes.push(start_square);
+                chain_bytes.push(end_square);
+                let signature = crypto::sign(key_pair, &chain_bytes);
+                MoveBlock {
+                    start_square,
+                    end_square,
+                    signature,
+                }
+            }
+            _ => {
+                return Err("Action not implemented");
+            }
+        };
+
+        self.moves.push(block);
+
+        Ok(())
+    }
+
     pub fn verify(&self) -> bool {
         if self.accepts[0].is_none() || self.accepts[1].is_none() {
             return false;
         }
-        if (crypto::verify(
+        if !((crypto::verify(
             &self.challenge.white_public_key,
             &self.challenge.as_bytes(),
             &self.accepts[0].clone().unwrap().signature,
@@ -190,10 +258,28 @@ impl GameChain {
             &self.challenge.black_public_key,
             &self.challenge.as_bytes(),
             &self.accepts[0].clone().unwrap().signature,
-        )) {
-            return true;
+        ))) {
+            return false;
         }
-        return false;
+
+        let mut chain = self.clone();
+        chain.moves = Vec::new();
+        let mut keys = (
+            chain.challenge.white_public_key,
+            chain.challenge.black_public_key,
+        );
+        for move_block in &self.moves {
+            let mut bytes = chain.as_bytes();
+            bytes.push(move_block.start_square);
+            bytes.push(move_block.end_square);
+            if !crypto::verify(&keys.0, &bytes, &move_block.signature) {
+                return false;
+            }
+            chain.moves.push(move_block.clone());
+            keys = (keys.1, keys.0);
+        }
+
+        return true;
     }
 
     pub fn as_bytes(&self) -> Vec<u8> {
@@ -201,11 +287,17 @@ impl GameChain {
         if self.accepts[0].is_none() {
             return bytes;
         }
+
         bytes.extend(self.accepts[0].clone().unwrap().as_bytes());
         if self.accepts[1].is_none() {
             return bytes;
         }
         bytes.extend(self.accepts[1].clone().unwrap().as_bytes());
+
+        for move_block in &self.moves {
+            bytes.extend(move_block.as_bytes());
+        }
+
         bytes
     }
 }
@@ -214,6 +306,7 @@ impl GameChain {
 mod test {
     use super::*;
     use crate::crypto;
+    use chess::{ChessMove, Square};
     use ring::signature::KeyPair;
 
     #[test]
@@ -234,13 +327,13 @@ mod test {
         let challenge =
             ChallengeBlock::new(white.public_key().as_ref(), black.public_key().as_ref());
         let mut chain = GameChain::new(challenge.clone());
-        chain.sign(&white);
-        chain.sign(&black);
+        assert!(chain.accept(&white).is_ok());
+        assert!(chain.accept(&black).is_ok());
         assert!(chain.verify());
 
         chain = GameChain::new(challenge);
-        chain.sign(&black);
-        chain.sign(&white);
+        assert!(chain.accept(&white).is_ok());
+        assert!(chain.accept(&black).is_ok());
         assert!(chain.verify());
     }
 
@@ -255,11 +348,11 @@ mod test {
 
         assert!(!chain.verify());
 
-        chain.sign(&white);
+        assert!(chain.accept(&white).is_ok());
         assert!(!chain.verify());
 
         // sign a second time with the same key (shouldn't work)
-        chain.sign(&white);
+        assert!(!chain.accept(&white).is_ok());
         assert!(!chain.verify());
 
         // duplicate the key so both accept blocks will verify (but only for one color)
@@ -276,10 +369,65 @@ mod test {
             ChallengeBlock::new(white.public_key().as_ref(), black.public_key().as_ref());
         assert_eq!(challenge, ChallengeBlock::from_bytes(&challenge.as_bytes()));
         let mut chain = GameChain::new(challenge.clone());
-        chain.sign(&white);
-        chain.sign(&black);
+        assert!(chain.accept(&white).is_ok());
+        assert!(chain.accept(&black).is_ok());
 
         assert_eq!(chain, GameChain::from_bytes(&chain.as_bytes()).unwrap());
-        dbg!(chain.as_bytes().len());
+    }
+
+    #[test]
+    fn make_moves() {
+        let rng = crypto::new_rng();
+        let white = crypto::generate_key(&rng);
+        let black = crypto::generate_key(&rng);
+        let challenge =
+            ChallengeBlock::new(white.public_key().as_ref(), black.public_key().as_ref());
+        assert_eq!(challenge, ChallengeBlock::from_bytes(&challenge.as_bytes()));
+        let mut chain = GameChain::new(challenge.clone());
+        assert!(chain.accept(&white).is_ok());
+        assert!(chain.accept(&black).is_ok());
+
+        assert!(chain
+            .make_move_block(
+                &white,
+                Action::MakeMove(ChessMove::new(
+                    Square::from_string("e2".to_string()).unwrap(),
+                    Square::from_string("e4".to_string()).unwrap(),
+                    None,
+                )),
+            )
+            .is_ok());
+        assert!(chain.verify());
+        assert!(chain
+            .make_move_block(
+                &black,
+                Action::MakeMove(ChessMove::new(
+                    Square::from_string("e7".to_string()).unwrap(),
+                    Square::from_string("e5".to_string()).unwrap(),
+                    None,
+                )),
+            )
+            .is_ok());
+        assert!(chain.verify());
+        assert!(chain
+            .make_move_block(
+                &white,
+                Action::MakeMove(ChessMove::new(
+                    Square::from_string("f2".to_string()).unwrap(),
+                    Square::from_string("f4".to_string()).unwrap(),
+                    None,
+                )),
+            )
+            .is_ok());
+        assert!(chain.verify());
+
+        chain.moves[0].signature[0] += 1;
+        assert!(!chain.verify());
+        chain.moves[0].signature[0] -= 1;
+        assert!(chain.verify());
+        chain.moves[2].signature[0] += 1;
+        assert!(!chain.verify());
+        chain.moves[2].signature[0] -= 1;
+        assert!(chain.verify());
     }
 }
