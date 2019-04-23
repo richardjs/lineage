@@ -1,3 +1,11 @@
+* TODO
+** Make sure castling and other special moves are handled properly
+** Handle encoding/decoding of resigns, draws, etc.
+** GameChain method for is game ongoing
+** Populate timestamp and IDs
+** Networking
+** Saving keys
+** Saving chains
 * Protocol
 ** Block format
 *** Challenge block

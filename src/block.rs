@@ -96,13 +96,26 @@ impl AcceptBlock {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct MoveBlock {
+pub struct MoveBlock {
     start_square: u8,
     end_square: u8,
     signature: Vec<u8>,
 }
 
 impl MoveBlock {
+    pub fn from_bytes(bytes: &[u8]) -> Result<MoveBlock, &str> {
+        if bytes.len() < 66 {
+            return Err("No enough bytes to create accept block.");
+        }
+        let mut signature_bytes = vec![0; 64];
+        signature_bytes.copy_from_slice(&bytes[2..66]);
+        Ok(MoveBlock {
+            start_square: bytes[0],
+            end_square: bytes[1],
+            signature: signature_bytes,
+        })
+    }
+
     pub fn as_bytes(&self) -> Vec<u8> {
         let mut bytes = vec![self.start_square, self.end_square];
         bytes.extend(&self.signature);
@@ -133,6 +146,7 @@ impl GameChain {
         }
         let challenge = ChallengeBlock::from_bytes(&bytes);
         let mut chain = GameChain::new(challenge);
+
         if let Ok(accept) = AcceptBlock::from_bytes(&bytes[82..]) {
             chain.accepts[0] = Some(accept);
         } else {
@@ -143,7 +157,22 @@ impl GameChain {
         } else {
             return Ok(chain);
         }
-        Ok(chain)
+
+        let mut offset = 82 + 64 + 64;
+        while bytes.len() >= offset + 66 {
+            if let Ok(move_block) = MoveBlock::from_bytes(&bytes[offset..offset + 66]) {
+                chain.moves.push(move_block);
+                offset += 66;
+            } else {
+                break;
+            }
+        }
+
+        if chain.verify() {
+            return Ok(chain);
+        } else {
+            return Err("Chain does not verify.");
+        }
     }
 
     pub fn get_game(&self) -> Game {
@@ -373,6 +402,42 @@ mod test {
         assert!(chain.accept(&black).is_ok());
 
         assert_eq!(chain, GameChain::from_bytes(&chain.as_bytes()).unwrap());
+
+        assert!(chain
+            .make_move_block(
+                &white,
+                Action::MakeMove(ChessMove::new(
+                    Square::from_string("e2".to_string()).unwrap(),
+                    Square::from_string("e4".to_string()).unwrap(),
+                    None,
+                )),
+            )
+            .is_ok());
+        assert!(chain.verify());
+        assert!(chain
+            .make_move_block(
+                &black,
+                Action::MakeMove(ChessMove::new(
+                    Square::from_string("e7".to_string()).unwrap(),
+                    Square::from_string("e5".to_string()).unwrap(),
+                    None,
+                )),
+            )
+            .is_ok());
+        assert!(chain.verify());
+        assert_eq!(chain, GameChain::from_bytes(&chain.as_bytes()).unwrap());
+        assert!(chain
+            .make_move_block(
+                &white,
+                Action::MakeMove(ChessMove::new(
+                    Square::from_string("f2".to_string()).unwrap(),
+                    Square::from_string("f4".to_string()).unwrap(),
+                    None,
+                )),
+            )
+            .is_ok());
+        assert!(chain.verify());
+        assert_eq!(chain, GameChain::from_bytes(&chain.as_bytes()).unwrap());
     }
 
     #[test]
@@ -429,5 +494,17 @@ mod test {
         assert!(!chain.verify());
         chain.moves[2].signature[0] -= 1;
         assert!(chain.verify());
+
+        // using the wrong key to make a move
+        assert!(!chain
+            .make_move_block(
+                &white,
+                Action::MakeMove(ChessMove::new(
+                    Square::from_string("e5".to_string()).unwrap(),
+                    Square::from_string("f4".to_string()).unwrap(),
+                    None,
+                )),
+            )
+            .is_ok());
     }
 }
